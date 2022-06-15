@@ -13,13 +13,14 @@ import (
 )
 
 const (
-	testProgramFilename = "ebpf_prog/xdp1.elf"
-	programsCount       = 5
-	mapsCount           = 7
+	xdpProgramFilename = "ebpf_prog/xdp1.elf"
 )
 
 type xdpTestSuite struct {
 	suite.Suite
+	programFilename string
+	programsCount   int
+	mapsCount       int
 }
 
 // Basic sanity test of BPF core functionality like
@@ -27,16 +28,16 @@ type xdpTestSuite struct {
 func (ts *xdpTestSuite) TestElfLoad() {
 	// This compile ELF file contains 2 BPF(XDP type) programs with 2 BPF maps
 	eb := goebpf.NewDefaultEbpfSystem()
-	err := eb.LoadElf(testProgramFilename)
+	err := eb.LoadElf(ts.programFilename)
 	ts.NoError(err)
 	if err != nil {
 		// ELF read error.
-		ts.FailNowf("Unable to read %s", testProgramFilename)
+		ts.FailNowf("Unable to read %s", ts.programFilename)
 	}
 
 	// There should be 6 BPF maps recognized by loader
 	maps := eb.GetMaps()
-	ts.Require().Equal(mapsCount, len(maps))
+	ts.Require().Equal(ts.mapsCount, len(maps))
 
 	txcnt := maps["txcnt"].(*goebpf.EbpfMap)
 	ts.NotEqual(0, txcnt.GetFd())
@@ -80,7 +81,7 @@ func (ts *xdpTestSuite) TestElfLoad() {
 	ts.Nil(eb.GetMapByName("something"))
 
 	// Also there should few XDP eBPF programs recognized
-	ts.Require().Equal(programsCount, len(eb.GetPrograms()))
+	ts.Require().Equal(ts.programsCount, len(eb.GetPrograms()))
 
 	// Check that everything loaded correctly / load program into kernel
 	for name, program := range eb.GetPrograms() {
@@ -112,15 +113,35 @@ func (ts *xdpTestSuite) TestElfLoad() {
 	ts.NoError(err)
 	err = progmap.Update(1, xdp1.GetFd())
 	ts.NoError(err)
+	// And delete from it
+	err = progmap.Delete(0)
+	ts.NoError(err)
+	err = progmap.Delete(1)
+	ts.NoError(err)
 
 	// Attach program to first (lo) interface
 	// P.S. XDP does not work on "lo" interface, however, you can still attach program to it
 	// which is enough to test basic BPF functionality
 	err = xdp0.Attach("lo")
-	ts.NoError(err)
-	// Detach program
+	ts.Require().NoError(err)
 	err = xdp0.Detach()
 	ts.NoError(err)
+
+	// Attach with parameters
+	err = xdp0.Attach(&goebpf.XdpAttachParams{
+		Interface: "lo",
+		Mode:      goebpf.XdpAttachModeSkb,
+	})
+	ts.Require().NoError(err)
+	err = xdp0.Detach()
+	ts.NoError(err)
+
+	// "lo" interface does not support XDP natively, so should fail
+	err = xdp0.Attach(&goebpf.XdpAttachParams{
+		Interface: "lo",
+		Mode:      goebpf.XdpAttachModeDrv,
+	})
+	ts.Require().Error(err)
 
 	// Unload programs (not required for real use case)
 	for _, program := range eb.GetPrograms() {
@@ -140,7 +161,7 @@ func (ts *xdpTestSuite) TestElfLoad() {
 func (ts *xdpTestSuite) TestProgramInfo() {
 	// Load test program, don't attach (not required to get info)
 	eb := goebpf.NewDefaultEbpfSystem()
-	err := eb.LoadElf(testProgramFilename)
+	err := eb.LoadElf(ts.programFilename)
 	ts.Require().NoError(err)
 	prog := eb.GetProgramByName("xdp0")
 	err = prog.Load()
@@ -182,5 +203,9 @@ func (ts *xdpTestSuite) TestProgramInfo() {
 
 // Run suite
 func TestXdpSuite(t *testing.T) {
-	suite.Run(t, new(xdpTestSuite))
+	suite.Run(t, &xdpTestSuite{
+		programFilename: xdpProgramFilename,
+		programsCount:   5,
+		mapsCount:       7,
+	})
 }

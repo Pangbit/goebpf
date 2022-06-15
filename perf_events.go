@@ -6,12 +6,18 @@ package goebpf
 /*
 #ifdef __linux__
 #include <linux/perf_event.h>
+#include <sys/sysinfo.h>
 #define PERF_EVENT_HEADER_SIZE		(sizeof(struct perf_event_header))
 #else
 // mocks for Mac
 #define PERF_EVENT_HEADER_SIZE		8
 #define PERF_RECORD_SAMPLE			9
 #define PERF_RECORD_LOST			2
+
+int get_nprocs()
+{
+	return 1;
+}
 #endif
 
 */
@@ -34,6 +40,7 @@ type PerfEvents struct {
 	// PollTimeoutMs is timeout for blocking call of poll()
 	// Defaults to 100ms
 	PollTimeoutMs int
+	poller        *perfEventPoller
 
 	perfMap        Map
 	updatesChannel chan []byte
@@ -84,16 +91,20 @@ func NewPerfEvents(m Map) (*PerfEvents, error) {
 // "bufferSize" is ring buffer size for perfEvents. Per CPU.
 // All updates will be sent into returned channel.
 func (pe *PerfEvents) StartForAllProcessesAndCPUs(bufferSize int) (<-chan []byte, error) {
-	// Get CPU count
-	nCpus, err := GetNumOfPossibleCpus()
-	if err != nil {
-		return nil, err
-	}
+	// Get ONLINE CPU count.
+	// There maybe confusion between get_nprocs() and GetNumOfPossibleCpus() functions:
+	// - get_nprocs() returns ONLINE CPUs
+	// - GetNumOfPossibleCpus() returns POSSIBLE (including currently offline) CPUs
+	// So space for eBPF maps should be reserved for ALL possible CPUs,
+	// but perfEvents may work only on online CPUs
+	nCpus := int(C.get_nprocs())
 
 	// Create perfEvent handler for all possible CPUs
+	var err error
+	var handler *perfEventHandler
 	pe.handlers = make([]*perfEventHandler, nCpus)
 	for cpu := 0; cpu < nCpus; cpu++ {
-		handler, err := newPerfEventHandler(cpu, -1, bufferSize) // All processes
+		handler, err = newPerfEventHandler(cpu, -1, bufferSize) // All processes
 		if err != nil {
 			// Error handling to be done after for loop
 			break
@@ -122,6 +133,8 @@ func (pe *PerfEvents) StartForAllProcessesAndCPUs(bufferSize int) (<-chan []byte
 
 // Stop stops event polling loop
 func (pe *PerfEvents) Stop() {
+	// Stop poller firstly
+	pe.poller.Stop()
 	// Stop poll loop
 	close(pe.stopChannel)
 	// Wait until poll loop stopped, then close updates channel
@@ -144,22 +157,25 @@ func (pe *PerfEvents) startLoop() {
 
 func (pe *PerfEvents) loop() {
 	// Setup poller to poll all handlers (one handler per CPU)
-	poller := newPerfEventPoller()
+	pe.poller = newPerfEventPoller()
 	for _, handler := range pe.handlers {
-		poller.Add(handler)
+		pe.poller.Add(handler)
 	}
 
 	// Start poller
-	pollerCh := poller.Start(pe.PollTimeoutMs)
+	pollerCh := pe.poller.Start(pe.PollTimeoutMs)
 	defer func() {
-		poller.Stop()
 		pe.wg.Done()
 	}()
 
 	// Wait until at least one perf event fd becomes readable (has new data)
 	for {
 		select {
-		case handler := <-pollerCh:
+		case handler, ok := <-pollerCh:
+			if !ok {
+				return
+			}
+
 			pe.handlePerfEvent(handler)
 
 		case <-pe.stopChannel:

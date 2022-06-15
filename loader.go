@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
@@ -30,11 +31,15 @@ const (
 )
 
 // Supported ELF section names and function how to create program of it type
-type programCreator func(name, license string, bytecode []byte) Program
+type programCreator func(bp BaseProgram) Program
 
 var sectionNameToProgramType = map[string]programCreator{
 	"xdp":           newXdpProgram,
 	"socket_filter": newSocketFilterProgram,
+	"kprobe":        newKprobeProgram,
+	"kretprobe":     newKretprobeProgram,
+	"tc_cls":        newTcSchedClsProgram,
+	"tc_act":        newTcSchedActProgram,
 }
 
 // BPF instruction //
@@ -290,12 +295,17 @@ func loadPrograms(elfFile *elf.File, maps map[string]Map) (map[string]Program, e
 	// Iterate over all ELF section in order to find known sections with eBPF programs
 	result := make(map[string]Program)
 	for sectionIndex, section := range elfFile.Sections {
+
 		// eBPF programs always sit in PROGBITS sections, so skip others
 		if section.Type != elf.SHT_PROGBITS {
 			continue
 		}
+
+		// Parse program type from section (everything before a '/' delimiter)
+		progType := strings.ToLower(strings.Split(section.Name, "/")[0])
+
 		// Ensure that this section is known
-		createProgram, ok := sectionNameToProgramType[strings.ToLower(section.Name)]
+		createProgram, ok := sectionNameToProgramType[progType]
 		if !ok {
 			continue
 		}
@@ -366,7 +376,12 @@ func loadPrograms(elfFile *elf.File, maps map[string]Map) (map[string]Program, e
 			name := offsetToNameMap[offset]
 			size := lastOffset - offset
 			// Create Program instance with type based on section name (e.g. XDP)
-			result[name] = createProgram(name, license, bytecode[offset:offset+size])
+			result[name] = createProgram(BaseProgram{
+				name:     name,
+				section:  section.Name,
+				license:  license,
+				bytecode: bytecode[offset : offset+size],
+			})
 			lastOffset = offset
 		}
 	}
@@ -374,14 +389,24 @@ func loadPrograms(elfFile *elf.File, maps map[string]Map) (map[string]Program, e
 	return result, nil
 }
 
-// Reads ELF file compiled by clang + llvm for target bpf
-func (s *ebpfSystem) LoadElf(fn string) error {
-	// Open/read ELF headers
-	elfFile, err := elf.Open(fn)
+// LoadElf reads ELF file compiled by clang + llvm for target bpf
+func (s *ebpfSystem) LoadElf(path string) error {
+	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	defer elfFile.Close()
+	defer f.Close()
+
+	return s.Load(f)
+}
+
+// Load reads ELF file compiled by clang + llvm for target bpf
+func (s *ebpfSystem) Load(r io.ReaderAt) error {
+	// Read ELF headers
+	elfFile, err := elf.NewFile(r)
+	if err != nil {
+		return err
+	}
 
 	// Load eBPF maps
 	s.Maps, err = loadAndCreateMaps(elfFile)

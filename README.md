@@ -1,18 +1,20 @@
 # Go eBPF
-[![Build Status](https://travis-ci.org/dropbox/goebpf.svg?branch=master)](https://travis-ci.org/dropbox/goebpf)
+[![Build Status](https://app.travis-ci.com/dropbox/goebpf.svg?branch=master)](https://app.travis-ci.com/dropbox/goebpf)
 [![Go Report Card](https://goreportcard.com/badge/github.com/dropbox/goebpf)](https://goreportcard.com/report/github.com/dropbox/goebpf)
 [![Documentation](https://godoc.org/github.com/dropbox/goebpf?status.svg)](http://godoc.org/github.com/dropbox/goebpf)
 
 A nice and convenient way to work with `eBPF` programs / perf events from Go.
 
 ## Requirements
-- Go 1.9+
+- Go 1.11+
 - Linux Kernel 4.15+
 
 ## Supported eBPF features
 - eBPF programs
     - `SocketFilter`
     - `XDP`
+    - `Kprobe` / `Kretprobe`
+    - `tc-cls` / `tc-act`
 - Perf Events
 
 Support for other program types / features can be added in future.
@@ -43,12 +45,12 @@ Consider very simple example of Read / Load / Attach
     // Work with maps
     test := bpf.GetMapByName("test")
     value, _ := test.LookupInt(0)
-    fmt.Printf("Value at index 0 of map 'test': %d\n", )
+    fmt.Printf("Value at index 0 of map 'test': %d\n", value)
 ```
 Like it? Check our [examples](https://github.com/dropbox/goebpf/tree/master/examples/)
 
 ## Perf Events
-Library currently has support for one, most popular use case of `perf_events` - where `eBPF` map key maps to `cpu_id`.
+Currently library has support for one, most popular use case of `perf_events: where `eBPF` map key maps to `cpu_id`.
 So `eBPF` and `go` parts actually bind `cpu_id` to map index. It maybe as simple as:
 
 ```c
@@ -79,9 +81,48 @@ And the `go` part:
         }
     }
 ```
-Simple? Check [full XDP dump example](https://github.com/dropbox/goebpf/tree/master/examples/xdp/xdp_dump)
+Looks simple? Check our [full XDP dump example](https://github.com/dropbox/goebpf/tree/master/examples/xdp/xdp_dump)
+
+## Kprobes
+Library currently has support for `kprobes` and `kretprobes`.
+It can be as simple as:
+
+```c
+    // kprobe handler function
+    SEC("kprobe/guess_execve")
+    int execve_entry(struct pt_regs *ctx) {
+      // ...
+      buf_perf_output(ctx);
+      return 0;
+    }
+```
+And the `go` part:
+```go
+	// Cleanup old probes
+	err := goebpf.CleanupProbes()
+
+	// Attach all probe programs
+	for _, prog := range bpf.GetPrograms() {
+		err := prog.Attach(nil)
+	}
+
+	// Create perf events
+	eventsMap := p.bpf.GetMapByName("events")
+	p.pe, err = goebpf.NewPerfEvents(eventsMap)
+	events, err := p.pe.StartForAllProcessesAndCPUs(4096)
+	defer events.Stop()
+
+	for {
+		select {
+		case data := <-events:
+			fmt.Println(data) // kProbe event
+		}
+	}
+```
+Simple? Check [exec dump example](https://github.com/dropbox/goebpf/tree/master/examples/kprobe/exec_dump)
 
 ## Good readings
+- [XDP Tutorials](https://github.com/xdp-project/xdp-tutorial)
 - [Cilium BPF and XDP Reference Guide](https://docs.cilium.io/en/latest/bpf/)
 - [Prototype Kernel: XDP](https://prototype-kernel.readthedocs.io/en/latest/networking/XDP/index.html)
 - [AF_XDP: Accelerating networking](https://lwn.net/Articles/750845/)

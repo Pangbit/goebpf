@@ -5,13 +5,13 @@ GOCMD := go
 GOBUILD := $(GOCMD) build
 GOCLEAN := $(GOCMD) clean
 CLANG := clang
-CLANG_INCLUDE := -I../../.. 
+CLANG_INCLUDE := -I../../..
 
 GO_SOURCE := main.go
 GO_BINARY := main
 
-EBPF_SOURCE := ebpf_prog/xdp_fw.c
-EBPF_BINARY := ebpf_prog/xdp_fw.elf
+EBPF_SOURCE := ebpf_prog/xdp.c
+EBPF_BINARY := ebpf_prog/xdp.elf
 
 all: build_bpf build_go
 

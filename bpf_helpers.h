@@ -49,17 +49,60 @@ enum bpf_map_type {
   BPF_MAP_TYPE_SK_STORAGE,
 };
 
+/* BPF_FUNC_skb_store_bytes flags. */
+enum {
+  BPF_F_RECOMPUTE_CSUM             = (1ULL << 0),
+  BPF_F_INVALIDATE_HASH            = (1ULL << 1),
+};
+
+/* BPF_FUNC_l3_csum_replace and BPF_FUNC_l4_csum_replace flags.
+ * First 4 bits are for passing the header field size.
+ */
+enum {
+  BPF_F_HDR_FIELD_MASK             = 0xfULL,
+};
+
+/* BPF_FUNC_l4_csum_replace flags. */
+enum {
+  BPF_F_PSEUDO_HDR                 = (1ULL << 4),
+  BPF_F_MARK_MANGLED_0             = (1ULL << 5),
+  BPF_F_MARK_ENFORCE               = (1ULL << 6),
+};
+
+/* BPF_FUNC_clone_redirect and BPF_FUNC_redirect flags. */
+enum {
+  BPF_F_INGRESS                    = (1ULL << 0),
+};
+
+/* BPF_FUNC_skb_set_tunnel_key flags. */
+enum {
+  BPF_F_ZERO_CSUM_TX               = (1ULL << 1),
+  BPF_F_DONT_FRAGMENT              = (1ULL << 2),
+  BPF_F_SEQ_NUMBER                 = (1ULL << 3),
+};
+
+/* BPF_FUNC_skb_adjust_room flags. */
+enum {
+  BPF_F_ADJ_ROOM_FIXED_GSO         = (1ULL << 0),
+  BPF_F_ADJ_ROOM_ENCAP_L3_IPV4     = (1ULL << 1),
+  BPF_F_ADJ_ROOM_ENCAP_L3_IPV6     = (1ULL << 2),
+  BPF_F_ADJ_ROOM_ENCAP_L4_GRE      = (1ULL << 3),
+  BPF_F_ADJ_ROOM_ENCAP_L4_UDP      = (1ULL << 4),
+  BPF_F_ADJ_ROOM_NO_CSUM_RESET     = (1ULL << 5),
+  BPF_F_ADJ_ROOM_ENCAP_L2_ETH      = (1ULL << 6),
+};
+
 /* flags for BPF_MAP_UPDATE_ELEM command */
-#define BPF_ANY     0 /* create new element or update existing */
+#define BPF_ANY 0     /* create new element or update existing */
 #define BPF_NOEXIST 1 /* create new element if it didn't exist */
-#define BPF_EXIST   2 /* update existing element */
-#define BPF_F_LOCK  4 /* spin_lock-ed map_lookup/map_update */
+#define BPF_EXIST 2   /* update existing element */
+#define BPF_F_LOCK 4  /* spin_lock-ed map_lookup/map_update */
 
 /* BPF_FUNC_perf_event_output, BPF_FUNC_perf_event_read and
  * BPF_FUNC_perf_event_read_value flags.
  */
-#define BPF_F_INDEX_MASK    0xffffffffULL
-#define BPF_F_CURRENT_CPU   BPF_F_INDEX_MASK
+#define BPF_F_INDEX_MASK 0xffffffffULL
+#define BPF_F_CURRENT_CPU BPF_F_INDEX_MASK
 
 // A helper structure used by eBPF C program
 // to describe map attributes to BPF program loader
@@ -81,6 +124,30 @@ struct bpf_map_def {
 #define BPF_MAP_OFFSET_PERSISTENT offsetof(struct bpf_map_def, persistent_path)
 #define BPF_MAP_OFFSET_INNER_MAP offsetof(struct bpf_map_def, inner_map_def)
 
+/* Generic BPF return codes which all BPF program types may support.
+ * The values are binary compatible with their TC_ACT_* counter-part to
+ * provide backwards compatibility with existing SCHED_CLS and SCHED_ACT
+ * programs.
+ *
+ * XDP is handled seprately, see XDP_*.
+ */
+enum bpf_ret_code {
+  BPF_OK = 0,
+  /* 1 reserved */
+  BPF_DROP = 2,
+  /* 3-6 reserved */
+  BPF_REDIRECT = 7,
+  /* >127 are reserved for prog type specific return codes.
+  *
+  * BPF_LWT_REROUTE: used by BPF_PROG_TYPE_LWT_IN and
+  *    BPF_PROG_TYPE_LWT_XMIT to indicate that skb had been
+  *    changed and should be routed based on its new L3 header.
+  *    (This is an L3 redirect, as opposed to L2 redirect
+  *    represented by BPF_REDIRECT above).
+  */
+  BPF_LWT_REROUTE = 128,
+};
+
 // XDP related constants
 enum xdp_action {
   XDP_ABORTED = 0,
@@ -94,6 +161,44 @@ enum xdp_action {
 enum socket_filter_action {
   SOCKET_FILTER_DENY = 0,
   SOCKET_FILTER_ALLOW,
+};
+
+// Kprobe required constants / structs
+// (arch/x86/include/asm/ptrace.h)
+#define PT_REGS_PARM1(x) ((x)->di)
+#define PT_REGS_PARM2(x) ((x)->si)
+#define PT_REGS_PARM3(x) ((x)->dx)
+#define PT_REGS_PARM4(x) ((x)->r10)
+#define PT_REGS_PARM5(x) ((x)->r8)
+#define PT_REGS_PARM6(x) ((x)->r9)
+#define PT_REGS_RET(x) ((x)->sp)
+#define PT_REGS_FP(x) ((x)->bp)
+#define PT_REGS_RC(x) ((x)->ax)
+#define PT_REGS_SP(x) ((x)->sp)
+#define PT_REGS_IP(x) ((x)->ip)
+
+struct pt_regs {
+  unsigned long r15;
+  unsigned long r14;
+  unsigned long r13;
+  unsigned long r12;
+  unsigned long bp;
+  unsigned long bx;
+  unsigned long r11;
+  unsigned long r10;
+  unsigned long r9;
+  unsigned long r8;
+  unsigned long ax;
+  unsigned long cx;
+  unsigned long dx;
+  unsigned long si;
+  unsigned long di;
+  unsigned long orig_ax;
+  unsigned long ip;
+  unsigned long cs;
+  unsigned long flags;
+  unsigned long sp;
+  unsigned long ss;
 };
 
 #define bpf_likely(X) __builtin_expect(!!(X), 1)
@@ -130,7 +235,13 @@ struct xdp_md {
   __u32 data;
   __u32 data_end;
   __u32 data_meta;
+  /* Below access go through struct xdp_rxq_info */
+  __u32 ingress_ifindex; /* rxq->dev->ifindex */
+  __u32 rx_queue_index;  /* rxq->queue_index  */
+
+  __u32 egress_ifindex;  /* txq->dev->ifindex */
 };
+
 
 /* user accessible mirror of in-kernel sk_buff.
  * new fields can only be added to the end of this structure
@@ -157,45 +268,45 @@ struct __sk_buff {
 
   /* Accessed by BPF_PROG_TYPE_sk_skb types from here to ... */
   __u32 family;
-  __u32 remote_ip4;  /* Stored in network byte order */
-  __u32 local_ip4;  /* Stored in network byte order */
-  __u32 remote_ip6[4];  /* Stored in network byte order */
+  __u32 remote_ip4;    /* Stored in network byte order */
+  __u32 local_ip4;     /* Stored in network byte order */
+  __u32 remote_ip6[4]; /* Stored in network byte order */
   __u32 local_ip6[4];  /* Stored in network byte order */
-  __u32 remote_port;  /* Stored in network byte order */
-  __u32 local_port;  /* stored in host byte order */
+  __u32 remote_port;   /* Stored in network byte order */
+  __u32 local_port;    /* stored in host byte order */
   /* ... here. */
 
   __u32 data_meta;
 };
 
 struct bpf_sock_tuple {
-	union {
-		struct {
-			__be32 saddr;
-			__be32 daddr;
-			__be16 sport;
-			__be16 dport;
-		} ipv4;
-		struct {
-			__be32 saddr[4];
-			__be32 daddr[4];
-			__be16 sport;
-			__be16 dport;
-		} ipv6;
-	};
+  union {
+    struct {
+      __be32 saddr;
+      __be32 daddr;
+      __be16 sport;
+      __be16 dport;
+    } ipv4;
+    struct {
+      __be32 saddr[4];
+      __be32 daddr[4];
+      __be16 sport;
+      __be16 dport;
+    } ipv6;
+  };
 };
 
 struct bpf_spin_lock {
-	__u32	val;
+  __u32 val;
 };
 
 struct bpf_sysctl {
-	__u32	write;		/* Sysctl is being read (= 0) or written (= 1).
-				 * Allows 1,2,4-byte read, but no write.
-				 */
-	__u32	file_pos;	/* Sysctl file position to read from, write to.
-				 * Allows 1,2,4-byte read an 4-byte write.
-				 */
+  __u32 write;    /* Sysctl is being read (= 0) or written (= 1).
+                   * Allows 1,2,4-byte read, but no write.
+                   */
+  __u32 file_pos; /* Sysctl file position to read from, write to.
+                   * Allows 1,2,4-byte read an 4-byte write.
+                   */
 };
 
 // BPF helper functions supported on linux kernel 5.2+
@@ -411,8 +522,17 @@ static __u32 (*bpf_get_route_realm)(void *ctx) = (void*) // NOLINT
 static int (*bpf_perf_event_output)(void *ctx, void *map, __u64 index, void *data, __u32 size) = (void*) // NOLINT
      BPF_FUNC_perf_event_output;
 
+static int (*bpf_l3_csum_replace)(void *ctx, int offset, __u64 from, __u64 to, __u64 size) = (void *) // NOLINT
+     BPF_FUNC_l3_csum_replace;
+
+static int (*bpf_l4_csum_replace)(void *ctx, int offset, __u64 from, __u64 to, __u64 flags) = (void *) // NOLINT
+     BPF_FUNC_l4_csum_replace;
+
 static int (*bpf_skb_load_bytes)(void *ctx, int offset, void *to, __u32 len) = (void*) // NOLINT
      BPF_FUNC_skb_load_bytes;
+
+static int (*bpf_skb_store_bytes)(void *ctx, int offset, const void *from, __u32 len, __u64 flags) = (void *) // NOLINT
+     BPF_FUNC_skb_store_bytes;
 
 static int (*bpf_perf_event_read_value)(void *map, __u64 flags, void *buf, __u32 buf_size) = (void*) // NOLINT
      BPF_FUNC_perf_event_read_value;
@@ -432,7 +552,7 @@ static __u64 (*bpf_get_socket_uid)(void *ctx) = (void*) // NOLINT
 static int (*bpf_getsockopt)(void *ctx, int level, int optname, void *optval, int optlen) = (void*) // NOLINT
      BPF_FUNC_getsockopt;
 
-static int (*bpf_redirect_map)(void *map, int key, int flags) = (void*) // NOLINT
+static int (*bpf_redirect_map)(void *map, __u32 key, __u64 flags) = (void*) // NOLINT
      BPF_FUNC_redirect_map;
 
 static int (*bpf_set_hash)(void *ctx, __u32 hash) = (void*) // NOLINT
@@ -710,6 +830,81 @@ static int (*bpf_xdp_adjust_head)(const void *ctx, int delta) = (void *) // NOLI
 #define BPF_MAP_DEF(name) struct bpf_map_def SEC("maps") name
 #define BPF_MAP_ADD(x)
 
+/* https://elixir.bootlin.com/linux/latest/source/include/uapi/linux/bpf.h#L4283 */
+/* DIRECT:  Skip the FIB rules and go to FIB table associated with device
+ * OUTPUT:  Do lookup from egress perspective; default is ingress
+ */
+enum {
+  BPF_FIB_LOOKUP_DIRECT  = (1U << 0),
+  BPF_FIB_LOOKUP_OUTPUT  = (1U << 1),
+};
+
+enum {
+  BPF_FIB_LKUP_RET_SUCCESS,      /* lookup successful */
+  BPF_FIB_LKUP_RET_BLACKHOLE,    /* dest is blackholed; can be dropped */
+  BPF_FIB_LKUP_RET_UNREACHABLE,  /* dest is unreachable; can be dropped */
+  BPF_FIB_LKUP_RET_PROHIBIT,     /* dest not allowed; can be dropped */
+  BPF_FIB_LKUP_RET_NOT_FWDED,    /* packet is not forwarded */
+  BPF_FIB_LKUP_RET_FWD_DISABLED, /* fwding is not enabled on ingress */
+  BPF_FIB_LKUP_RET_UNSUPP_LWT,   /* fwd requires encapsulation */
+  BPF_FIB_LKUP_RET_NO_NEIGH,     /* no neighbor entry for nh */
+  BPF_FIB_LKUP_RET_FRAG_NEEDED,  /* fragmentation required to fwd */
+};
+
+struct bpf_fib_lookup {
+  /* input:  network family for lookup (AF_INET, AF_INET6)
+  * output: network family of egress nexthop
+  */
+  __u8	family;
+
+  /* set if lookup is to consider L4 data - e.g., FIB rules */
+  __u8	l4_protocol;
+  __be16	sport;
+  __be16	dport;
+
+  /* total length of packet from network header - used for MTU check */
+  __u16	tot_len;
+
+  /* input: L3 device index for lookup
+  * output: device index from FIB lookup
+  */
+  __u32	ifindex;
+
+  union {
+    /* inputs to lookup */
+    __u8	tos;		/* AF_INET  */
+    __be32	flowinfo;	/* AF_INET6, flow_label + priority */
+
+    /* output: metric of fib result (IPv4/IPv6 only) */
+    __u32	rt_metric;
+};
+
+  union {
+    __be32		ipv4_src;
+    __u32		ipv6_src[4];  /* in6_addr; network order */
+};
+
+  /* input to bpf_fib_lookup, ipv{4,6}_dst is destination address in
+  * network header. output: bpf_fib_lookup sets to gateway address
+  * if FIB lookup returns gateway route
+  */
+  union {
+    __be32		ipv4_dst;
+    __u32		ipv6_dst[4];  /* in6_addr; network order */
+};
+
+  /* output */
+  __be16	h_vlan_proto;
+  __be16	h_vlan_TCI;
+  __u8	smac[6];     /* ETH_ALEN */
+  __u8	dmac[6];     /* ETH_ALEN */
+};
+
+// offsetof gets the offset of a struct member
+#ifndef offsetof
+#define offsetof(TYPE, MEMBER) ((size_t) &((TYPE *)0)->MEMBER)
+#endif
+
 ///// end of __BPF__ /////
 
 #else
@@ -737,6 +932,11 @@ struct xdp_md {
   void *data;
   void *data_end;
   void *data_meta;
+  /* Below access go through struct xdp_rxq_info */
+  __u32 ingress_ifindex; /* rxq->dev->ifindex */
+  __u32 rx_queue_index;  /* rxq->queue_index  */
+
+  __u32 egress_ifindex;  /* txq->dev->ifindex */
 };
 
 // Mock BPF map support:
@@ -801,8 +1001,8 @@ UNUSED static int bpf_xdp_adjust_head(struct xdp_md *ctx, int offset) {
   return 0;
 }
 
-UNUSED static int bpf_perf_event_output(void *ctx, void *map, __u64 index, void *data, __u32 size)
-{
+UNUSED static int bpf_perf_event_output(void *ctx, void *map, __u64 index,
+                                        void *data, __u32 size) {
   return 0;
 }
 

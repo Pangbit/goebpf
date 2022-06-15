@@ -3,11 +3,15 @@
 
 package goebpf
 
+import "io"
+
 // System defines interface for eBPF system - top level
 // interface to interact with eBPF system
 type System interface {
-	// Read previously compiled eBPF program
-	LoadElf(fn string) error
+	// Read previously compiled eBPF program at the given path
+	LoadElf(path string) error
+	// Read previously compiled eBPF program from an io.ReaderAt
+	Load(reader io.ReaderAt) error
 	// Get all defined eBPF maps
 	GetMaps() map[string]Map
 	// Returns Map or nil if not found
@@ -28,13 +32,15 @@ type Program interface {
 	// Unload program from kernel
 	Close() error
 	// Attach program to something - depends on program type.
-	// - XDP: Attach to network interface (data - iface name, e.g. "eth0")
+	// - XDP: Attach to network interface (data - iface name, or XdpAttachParams)
 	// - SocketFilter: Attach to socket (data - socket fd)
 	Attach(data interface{}) error
 	// Detach previously attached program
 	Detach() error
 	// Returns program name as it defined in C code
 	GetName() string
+	// Returns section name for the program
+	GetSection() string
 	// Returns program file descriptor (given by kernel)
 	GetFd() int
 	// Returns size of program in bytes
@@ -67,6 +73,11 @@ type Map interface {
 	Update(interface{}, interface{}) error
 	Upsert(interface{}, interface{}) error
 	Delete(interface{}) error
+	// Implementation of bpf_map_get_next_key
+	GetNextKey(interface{}) ([]byte, error)
+	GetNextKeyString(interface{}) (string, error)
+	GetNextKeyInt(interface{}) (int, error)
+	GetNextKeyUint64(interface{}) (uint64, error)
 }
 
 const (

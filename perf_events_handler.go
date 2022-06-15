@@ -38,12 +38,15 @@ static int perf_event_open(int cpu_id, int pid, void *error_buf, size_t error_si
     };
 
     // Open perf events for given CPU
-    int pmu_fd = syscall(__NR_perf_event_open, &attr, pid, cpu_id, -1, 0);
+#ifdef __linux
+	int pmu_fd = syscall(__NR_perf_event_open, &attr, pid, cpu_id, -1, 0);
     if (pmu_fd <= 0) {
         strncpy(error_buf, strerror(errno), error_size);
     }
-
-    return pmu_fd;
+	return pmu_fd;
+#else
+	return 0;
+#endif
 }
 
 // Enables perf events on pmu_fd create by perf_event_open()
@@ -118,7 +121,7 @@ func newPerfEventHandler(cpu, pid int, bufferSize int) (*perfEventHandler, error
 		C.size_t(res.shMemSize),
 		unsafe.Pointer(&errorBuf[0]), C.size_t(unsafe.Sizeof(errorBuf)),
 	)
-	if res.shMem == unsafe.Pointer(uintptr(0)) {
+	if res.shMem == nil {
 		C.close(res.pmuFd)
 		res.pmuFd = 0
 		return nil, fmt.Errorf("Unable to mmap(): %v",

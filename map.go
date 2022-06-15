@@ -12,6 +12,15 @@ package goebpf
 #include "bpf.h"
 #include "bpf_helpers.h"
 
+// Mac has syscall() deprecated and this produces some noise during package install.
+// Wrap all syscalls into macro.
+#ifdef __linux__
+#define SYSCALL_BPF(command)		\
+	syscall(__NR_bpf, command, &attr, sizeof(attr));
+#else
+#define SYSCALL_BPF(command)		0
+#endif
+
 // Since eBPF mock package is optional and have definition of "__maps_head" symbol
 // it may cause link error, so defining weak symbol here as well
 struct __create_map_def maps_head;
@@ -30,7 +39,7 @@ static int ebpf_map_create(const char *name, __u32 map_type, __u32 key_size, __u
 	attr.inner_map_fd = inner_fd;
 	strncpy((char*)&attr.map_name, name, BPF_OBJ_NAME_LEN - 1);
 
-	int res = syscall(__NR_bpf, BPF_MAP_CREATE, &attr, sizeof(attr));
+	int res = SYSCALL_BPF(BPF_MAP_CREATE);
 	strncpy(log_buf, strerror(errno), log_size);
 	return res;
 }
@@ -45,7 +54,7 @@ static int ebpf_map_update_elem(__u32 fd, const void *key, const void *value,
 	attr.value = ptr_to_u64(value);
 	attr.flags = flags;
 
-	int res = syscall(__NR_bpf, BPF_MAP_UPDATE_ELEM, &attr, sizeof(attr));
+	int res = SYSCALL_BPF(BPF_MAP_UPDATE_ELEM);
 	strncpy(log_buf, strerror(errno), log_size);
 	return res;
 }
@@ -59,7 +68,7 @@ static int ebpf_map_lookup_elem(__u32 fd, const void *key, void *value,
 	attr.key = ptr_to_u64(key);
 	attr.value = ptr_to_u64(value);
 
-	int res = syscall(__NR_bpf, BPF_MAP_LOOKUP_ELEM, &attr, sizeof(attr));
+	int res = SYSCALL_BPF(BPF_MAP_LOOKUP_ELEM);
 	strncpy(log_buf, strerror(errno), log_size);
 	return res;
 }
@@ -72,19 +81,7 @@ static int ebpf_map_delete_elem(__u32 fd, const void *key,
 	attr.map_fd = fd;
 	attr.key = ptr_to_u64(key);
 
-	int res = syscall(__NR_bpf, BPF_MAP_DELETE_ELEM, &attr, sizeof(attr));
-	strncpy(log_buf, strerror(errno), log_size);
-	return res;
-}
-
-static int ebpf_obj_get(const char *pathname,
-		void *log_buf, size_t log_size)
-{
-	union bpf_attr attr = {};
-
-	attr.pathname = ptr_to_u64(pathname);
-
-	int res = syscall(__NR_bpf, BPF_OBJ_GET, &attr, sizeof(attr));
+	int res = SYSCALL_BPF(BPF_MAP_DELETE_ELEM);
 	strncpy(log_buf, strerror(errno), log_size);
 	return res;
 }
@@ -95,7 +92,7 @@ static int ebpf_map_get_fd_by_id(__u32 id,
 	union bpf_attr attr = {};
 	attr.map_id = id;
 
-	int fd = syscall(__NR_bpf, BPF_MAP_GET_FD_BY_ID, &attr, sizeof(attr));
+	int fd = SYSCALL_BPF(BPF_MAP_GET_FD_BY_ID);
 	strncpy(log_buf, strerror(errno), log_size);
 
 	return fd;
@@ -110,12 +107,25 @@ static int ebpf_obj_get_info_by_fd(__u32 fd, void *info, __u32 info_len,
 	attr.info.info = ptr_to_u64(info);
 	attr.info.info_len = info_len;
 
-	int res = syscall(__NR_bpf, BPF_OBJ_GET_INFO_BY_FD, &attr, sizeof(attr));
+	int res = SYSCALL_BPF(BPF_OBJ_GET_INFO_BY_FD);
 	strncpy(log_buf, strerror(errno), log_size);
 
 	return res;
 }
 
+static int ebpf_map_get_next_key(__u32 fd, const void *key, void *next_key,
+		void *log_buf, size_t log_size)
+{
+	union bpf_attr attr = {};
+
+	attr.map_fd = fd;
+	attr.key = ptr_to_u64(key);
+	attr.next_key = ptr_to_u64(next_key);
+
+	int res = SYSCALL_BPF(BPF_MAP_GET_NEXT_KEY);
+	strncpy(log_buf, strerror(errno), log_size);
+	return res;
+}
 
 */
 import "C"
@@ -342,7 +352,7 @@ func NewMapFromExistingMapByFd(fd int) (*EbpfMap, error) {
 		return nil, err
 	}
 
-	return &EbpfMap{
+	m := &EbpfMap{
 		fd:         fd,
 		Name:       NullTerminatedStringToString(rawInfo.Name[:]),
 		Type:       MapType(rawInfo.Type),
@@ -350,7 +360,13 @@ func NewMapFromExistingMapByFd(fd int) (*EbpfMap, error) {
 		ValueSize:  int(rawInfo.ValueSize),
 		MaxEntries: int(rawInfo.MaxEntries),
 		Flags:      int(rawInfo.Flags),
-	}, nil
+	}
+
+	if err := m.setValueRealSize(); err != nil {
+		return nil, err
+	}
+
+	return m, nil
 }
 
 // NewMapFromExistingMapById creates eBPF map from BPF object ID.
@@ -370,12 +386,45 @@ func NewMapFromExistingMapById(id int) (*EbpfMap, error) {
 	return NewMapFromExistingMapByFd(int(fd))
 }
 
+// NewMapFromExistingMapMapByPath creates eBPF map from a pinned BPF object path.
+// Pinned BPF object is a kernel mechanism to let non owner process to use BPF objects.
+// Common use case - tooling for troubleshoot / inspect existing BPF objects in the kernel.
+func NewMapFromExistingMapByPath(path string) (*EbpfMap, error) {
+	fd, err := ebpfObjGet(path)
+	if err != nil {
+		return nil, err
+	}
+	m, err := NewMapFromExistingMapByFd(fd)
+	if err != nil {
+		return m, err
+	}
+
+	m.PersistentPath = path
+	return m, err
+}
+
 // If map type is Per-CPU based
 func (m *EbpfMap) isPerCpu() bool {
 	return m.Type == MapTypePerCPUArray ||
 		m.Type == MapTypePerCPUHash ||
 		m.Type == MapTypeLRUPerCPUHash ||
 		m.Type == MapTypePerCpuCGroupStorage
+}
+
+// Per-CPU maps require extra space to store values from ALL possible CPUs.
+// For access from userspace, each single value is padded so that it's a multiple of 8 bytes.
+// See: https://github.com/torvalds/linux/commit/15a07b33814d14ca817887dbea8530728dc0fbe4
+func (m *EbpfMap) setValueRealSize() error {
+	if m.isPerCpu() {
+		numCpus, err := GetNumOfPossibleCpus()
+		if err != nil {
+			return err
+		}
+		m.valueRealSize = ((m.ValueSize + 7) / 8) * 8 * numCpus
+	} else {
+		m.valueRealSize = m.ValueSize
+	}
+	return nil
 }
 
 // Map elements part: lookup, update / delete / etc
@@ -421,15 +470,8 @@ func (m *EbpfMap) Create() error {
 		return fmt.Errorf("Invalid map '%s' value size(%d)", m.Name, m.ValueSize)
 	}
 
-	// Per-CPU maps require extra space to store values from ALL possible CPUs
-	if m.isPerCpu() {
-		numCpus, err := GetNumOfPossibleCpus()
-		if err != nil {
-			return err
-		}
-		m.valueRealSize = m.ValueSize * numCpus
-	} else {
-		m.valueRealSize = m.ValueSize
+	if err := m.setValueRealSize(); err != nil {
+		return err
 	}
 
 	// Don't re-create map if it has fd assigned (NewMapFromExisting use case)
@@ -443,16 +485,10 @@ func (m *EbpfMap) Create() error {
 	// Map can be defined as either process only or system wide ("object pinning")
 	// If PersistentPath is set - it indicates that eBPF program wants to
 	// make this map system wide accessible via PersistentPath (it is just filename)
-	persistentPathStr := C.CString(m.PersistentPath)
-	defer C.free(unsafe.Pointer(persistentPathStr))
 	if m.PersistentPath != "" {
 		// Try to locate map in the system on
 		// given path (i.e. map has been already created before)
-		objFd := int(C.ebpf_obj_get(
-			persistentPathStr,
-			unsafe.Pointer(&logBuf[0]),
-			C.size_t(unsafe.Sizeof(logBuf)),
-		))
+		objFd, _ := ebpfObjGet(m.PersistentPath)
 		if objFd != -1 {
 			// Successful, retrieved map fd from given location
 			m.fd = objFd
@@ -525,7 +561,7 @@ func (m *EbpfMap) CloneTemplate() Map {
 
 // Lookup performs lookup and returns array of bytes
 // WARNING: For Per-CPU array/hash map return value will contain
-// data from all CPUs, i.e. length = valueSize * nCPU
+// data from all CPUs, i.e. length = roundUp(valueSize, 8) * nCPU
 func (m *EbpfMap) Lookup(ikey interface{}) ([]byte, error) {
 	// Convert key into bytes
 	key, err := KeyValueToBytes(ikey, int(m.KeySize))
@@ -618,7 +654,7 @@ func (m *EbpfMap) updateImpl(ikey interface{}, ivalue interface{}, op int) error
 		return err
 	}
 
-	val, err := KeyValueToBytes(ivalue, int(m.ValueSize))
+	val, err := KeyValueToBytes(ivalue, int(m.valueRealSize))
 	if err != nil {
 		return err
 	}
@@ -686,6 +722,63 @@ func (m *EbpfMap) Delete(ikey interface{}) error {
 	}
 
 	return nil
+}
+
+// GetNextKey looks up next key in the map.
+// returns 'next_key' on success, 'err' on failure (or last key in map - no next key available).
+func (m *EbpfMap) GetNextKey(ikey interface{}) ([]byte, error) {
+	// Convert key into bytes
+	key, err := KeyValueToBytes(ikey, int(m.KeySize))
+	if err != nil {
+		return nil, err
+	}
+
+	var nextKey = make([]byte, m.KeySize)
+	var logBuf [errCodeBufferSize]byte
+
+	res := int(C.ebpf_map_get_next_key(
+		C.__u32(m.fd),
+		unsafe.Pointer(&key[0]),
+		unsafe.Pointer(&nextKey[0]),
+		unsafe.Pointer(&logBuf[0]),
+		C.size_t(unsafe.Sizeof(logBuf))))
+
+	if res == -1 {
+		return nil, fmt.Errorf("ebpf_map_get_next_key() failed: %s",
+			NullTerminatedStringToString(logBuf[:]))
+	}
+
+	return nextKey, nil
+}
+
+// GetNextKeyString looks up next key in the map and returns it
+// as a golang string.
+func (m *EbpfMap) GetNextKeyString(ikey interface{}) (string, error) {
+	nextKey, err := m.GetNextKey(ikey)
+	if err != nil {
+		return "", err
+	}
+	return NullTerminatedStringToString(nextKey), nil
+}
+
+// GetNextKeyInt looks up next key in the map and returns it
+// as int.
+func (m *EbpfMap) GetNextKeyInt(ikey interface{}) (int, error) {
+	nextKey, err := m.GetNextKeyUint64(ikey)
+	return int(nextKey), err
+}
+
+// GetNextKeyUint64 looks up next key in the map and returns it
+// as uint64.
+func (m *EbpfMap) GetNextKeyUint64(ikey interface{}) (uint64, error) {
+	if m.KeySize > 8 {
+		return 0, errors.New("Value is too large to fit int")
+	}
+	nextKey, err := m.GetNextKey(ikey)
+	if err != nil {
+		return 0, err
+	}
+	return m.parseFlexibleMultiInteger(nextKey), nil
 }
 
 // GetFd returns fd (file descriptor) of eBPF map
